@@ -12,7 +12,8 @@ export interface ActiveChat {
 }
 
 export interface ActiveProject {
-  /** Projects are matched by name across hosts, like Paseo's own sidebar. */
+  /** Paseo's project view key: the git remote when known, else the host and project id. */
+  viewKey: string;
   name: string;
   lastActivityAt: string | null;
   chats: ActiveChat[];
@@ -34,16 +35,25 @@ function newerFirst(a: string | null, b: string | null): number {
   return (b ?? "").localeCompare(a ?? "");
 }
 
+export function projectViewKey(serverId: string, workspace: Workspace): string {
+  return workspace.project?.projectKey ?? JSON.stringify([serverId, workspace.projectId]);
+}
+
+export function currentBranch(workspace: Workspace): string | null {
+  return workspace.gitRuntime?.currentBranch ?? null;
+}
+
 /** Projects with at least one open workspace, most recently active first. */
 export function groupByProject(chats: Iterable<ActiveChat>): ActiveProject[] {
   const projects = new Map<string, ActiveProject>();
   for (const chat of chats) {
     const { workspace } = chat;
-    const name = workspace.projectCustomName || workspace.projectDisplayName;
-    let project = projects.get(name);
+    const viewKey = projectViewKey(chat.serverId, workspace);
+    let project = projects.get(viewKey);
     if (!project) {
-      project = { name, lastActivityAt: null, chats: [] };
-      projects.set(name, project);
+      const name = workspace.projectCustomName || workspace.projectDisplayName;
+      project = { viewKey, name, lastActivityAt: null, chats: [] };
+      projects.set(viewKey, project);
     }
     project.chats.push(chat);
     if (newerFirst(project.lastActivityAt, workspace.activityAt) > 0) {
