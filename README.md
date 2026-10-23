@@ -16,7 +16,7 @@ Every Paseo daemon needs its own install. Repeat this on each machine you connec
 paseo --version
 ```
 
-If it is lower than `0.13.0-beta.1`, upgrade and restart the daemon. Restarting stops agents running on that daemon.
+If it is lower than `0.13.0-beta.1`, upgrade and restart the daemon. Check `daemonVersion` in `paseo daemon status` too: the daemon keeps running the old version until it restarts. Restarting stops agents running on that daemon.
 
 ```bash
 npm install -g @getpaseo/cli@beta
@@ -27,36 +27,46 @@ paseo daemon restart
 
 The daemon clones this repo with `git`, so the machine must be able to read it. Use **one** of these:
 
-**Deploy key (recommended: read-only access to this repo only)**
+**GitHub CLI login (simplest; gives the machine access to your whole account)**
+
+If `gh auth status` already shows you logged in, this is all you need:
+
+```bash
+gh auth login        # skip if already logged in
+gh auth setup-git    # lets plain git use the gh login for github.com
+git ls-remote https://github.com/mh-coder-1918/paseo-plugins.git   # should list refs/heads/main
+```
+
+The source to install is then `https://github.com/mh-coder-1918/paseo-plugins.git:plugins/<plugin>`.
+
+**Deploy key (read-only access to this repo only)**
 
 ```bash
 ssh-keygen -t ed25519 -N "" -f ~/.ssh/paseo_plugins -C "paseo-plugins $(hostname)"
 cat ~/.ssh/paseo_plugins.pub
 ```
 
-Add the printed key in GitHub under **this repo → Settings → Deploy keys → Add deploy key**, with write access off. Then on the machine:
+Add the printed key in GitHub under **this repo → Settings → Deploy keys → Add deploy key**, with write access off. Then on the machine give the key its own host alias, so it doesn't replace any other GitHub key the machine uses:
 
 ```bash
 cat >> ~/.ssh/config <<'EOF'
-Host github.com
+Host github-paseo
+  HostName github.com
+  User git
   IdentityFile ~/.ssh/paseo_plugins
   IdentitiesOnly yes
 EOF
-ssh -T git@github.com   # should say "successfully authenticated"
 ```
 
-The source to install is then `git@github.com:mh-coder-1918/paseo-plugins.git:plugins/<plugin>`.
-
-If the machine already uses another SSH key for GitHub, give this one its own host alias instead, e.g. `Host github-paseo` with `HostName github.com`, and install from `git@github-paseo:mh-coder-1918/paseo-plugins.git:plugins/<plugin>`.
-
-**GitHub CLI login (simpler, gives the machine access to your whole account)**
+The daemon clones without a prompt, so GitHub's host key must already be trusted. Check that the fingerprint printed here is `SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU` ([GitHub's published key](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints)) before adding it:
 
 ```bash
-gh auth login
-gh auth setup-git
+ssh-keyscan -t ed25519 github.com > /tmp/gh_hostkey && ssh-keygen -lf /tmp/gh_hostkey
+cat /tmp/gh_hostkey >> ~/.ssh/known_hosts && rm /tmp/gh_hostkey
+git ls-remote git@github-paseo:mh-coder-1918/paseo-plugins.git   # should list refs/heads/main
 ```
 
-The source to install is then `github:mh-coder-1918/paseo-plugins:plugins/<plugin>`.
+The source to install is then `git@github-paseo:mh-coder-1918/paseo-plugins.git:plugins/<plugin>`.
 
 ### 3. Turn on plugins
 
@@ -71,24 +81,26 @@ const fs = require("fs");
 const p = process.env.HOME + "/.paseo/config.json";
 const c = JSON.parse(fs.readFileSync(p, "utf8"));
 c.pluginsEnabled = true;
-fs.writeFileSync(p, JSON.stringify(c, null, 2));
+fs.writeFileSync(p, JSON.stringify(c, null, 2) + "\n");
 '
 paseo reload --json   # "pluginsEnabled" should be listed under appliedPaths
 ```
 
 ### 4. Install a plugin
 
-With a deploy key:
-
-```bash
-paseo plugin install git@github.com:mh-coder-1918/paseo-plugins.git:plugins/pdf-viewer
-```
-
 With the GitHub CLI login:
 
 ```bash
-paseo plugin install github:mh-coder-1918/paseo-plugins:plugins/pdf-viewer
+paseo plugin install https://github.com/mh-coder-1918/paseo-plugins.git:plugins/pdf-viewer
 ```
+
+With a deploy key:
+
+```bash
+paseo plugin install git@github-paseo:mh-coder-1918/paseo-plugins.git:plugins/pdf-viewer
+```
+
+Installing also adds a `plugins.<id>` entry to the daemon's `config.json`; that is Paseo's own bookkeeping. No daemon restart is needed.
 
 Then check it:
 
