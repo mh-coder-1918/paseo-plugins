@@ -1,0 +1,8 @@
+{
+  "id": "pdf-viewer",
+  "name": "PDF viewer",
+  "media": [],
+  "requirements": {
+    "paseo": ">=0.12.0"
+  }
+}
