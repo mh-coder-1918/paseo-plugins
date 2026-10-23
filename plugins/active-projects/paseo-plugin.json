@@ -1,0 +1,8 @@
+{
+  "id": "active-projects",
+  "name": "Active projects",
+  "media": [],
+  "requirements": {
+    "paseo": ">=0.13.0-beta.1"
+  }
+}
