@@ -119,7 +119,7 @@ export function sidebarPalette(theme: PluginTheme): SidebarPalette {
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-/** Short activity age in the sidebar's style: now, 5m, 3h, 2d, Oct 15. */
+/** Short age in the sidebar's style: now, 5m, 3h, 2d, Oct 15. */
 export function shortAge(iso: string | null, now = Date.now()): string | null {
   if (!iso) return null;
   const time = Date.parse(iso);

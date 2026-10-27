@@ -4,6 +4,7 @@ import {
   OpenWorkspaceScreen,
   createActiveProjectsSidebarItem,
 } from "./client/active-projects-sidebar";
+import { installNativeWorkspacesStyle } from "./client/native-workspaces";
 import { openInFileManagerRpc } from "./shared/rpc";
 
 export default function contribute(client: PluginClientContext) {
@@ -17,5 +18,5 @@ export default function contribute(client: PluginClientContext) {
       },
     }),
   });
-  return () => {};
+  return installNativeWorkspacesStyle();
 }

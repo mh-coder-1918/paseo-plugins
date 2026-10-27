@@ -4,4 +4,6 @@ Rows look like Paseo's Workspaces list: project avatars in their colors, a spinn
 
 Right-click a workspace (or long-press on mobile) for Copy path, Copy branch name, Rename workspace, Open in file manager and Archive. Open in file manager is offered only for workspaces on the host the plugin is installed on. Pin, Mark as unread and Labels are not available to plugins, so use Paseo's own list for those.
 
+The eye button next to the "Active projects" heading hides Paseo's own Workspaces section in the desktop and web apps, and shows it again. Paseo has no plugin API for this, so the plugin hides the list with a style rule, and a Paseo update could stop it from working.
+
 Every host configured in the app is included. Background and archived workspaces are left out. Host badge colors come from the app's host settings when the plugin can read them, and are grey otherwise.

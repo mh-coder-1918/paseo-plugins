@@ -8,6 +8,8 @@ export type Workspace = WorkspaceList["entries"][number];
 export interface ActiveChat {
   serverId: string;
   hostLabel: string;
+  /** Paseo's project view key: the git remote when known, else the host and project id. */
+  viewKey: string;
   workspace: Workspace;
 }
 
@@ -22,7 +24,7 @@ export interface ActiveProject {
 export type HostWorkspacesState =
   | { status: "loading" }
   | { status: "error"; error: string }
-  | { status: "ready"; workspaces: Workspace[] };
+  | { status: "ready"; workspaces: Workspace[]; viewKeys: ReadonlyMap<string, string> };
 
 // The daemon rejects pages larger than 200; later pages are fetched with the cursor.
 const PAGE_LIMIT = 200;
@@ -35,8 +37,35 @@ function newerFirst(a: string | null, b: string | null): number {
   return (b ?? "").localeCompare(a ?? "");
 }
 
-export function projectViewKey(serverId: string, workspace: Workspace): string {
-  return workspace.project?.projectKey ?? JSON.stringify([serverId, workspace.projectId]);
+function placementKey(serverId: string, projectId: string): string {
+  return JSON.stringify([serverId, projectId]);
+}
+
+/**
+ * Project id to view key, as Paseo's sidebar derives it: a project key shared by exactly one
+ * project on the host groups across hosts; otherwise the project stays tied to its host.
+ */
+function viewKeysFor(serverId: string, projects: readonly { projectId: string; projectKey?: string }[]) {
+  const keyCounts = new Map<string, number>();
+  for (const { projectKey } of projects) {
+    if (projectKey) keyCounts.set(projectKey, (keyCounts.get(projectKey) ?? 0) + 1);
+  }
+  const viewKeys = new Map<string, string>();
+  for (const { projectId, projectKey } of projects) {
+    viewKeys.set(
+      projectId,
+      projectKey && keyCounts.get(projectKey) === 1 ? projectKey : placementKey(serverId, projectId),
+    );
+  }
+  return viewKeys;
+}
+
+export function projectViewKey(
+  serverId: string,
+  workspace: Workspace,
+  viewKeys: ReadonlyMap<string, string>,
+): string {
+  return viewKeys.get(workspace.projectId) ?? placementKey(serverId, workspace.projectId);
 }
 
 export function currentBranch(workspace: Workspace): string | null {
@@ -48,7 +77,7 @@ export function groupByProject(chats: Iterable<ActiveChat>): ActiveProject[] {
   const projects = new Map<string, ActiveProject>();
   for (const chat of chats) {
     const { workspace } = chat;
-    const viewKey = projectViewKey(chat.serverId, workspace);
+    const { viewKey } = chat;
     let project = projects.get(viewKey);
     if (!project) {
       const name = workspace.projectCustomName || workspace.projectDisplayName;
@@ -81,17 +110,37 @@ export function useHostWorkspaces(serverId: string, online: boolean): HostWorksp
     if (!online) return;
     setState({ status: "loading" });
     const workspaces = new Map<string, Workspace>();
+    let viewKeys: ReadonlyMap<string, string> = new Map();
+    let loadingProjects: Promise<void> | null = null;
     let disposed = false;
     let unsubscribe: (() => void) | undefined;
     let release: (() => Promise<void>) | undefined;
 
     const publish = () => {
-      if (!disposed) setState({ status: "ready", workspaces: [...workspaces.values()].filter(isOpen) });
+      if (!disposed) {
+        setState({ status: "ready", workspaces: [...workspaces.values()].filter(isOpen), viewKeys });
+      }
     };
     const fail = (error: unknown) => {
       if (!disposed) setState({ status: "error", error: errorMessage(error) });
     };
     const paseo = getPaseoClient(serverId);
+    // Workspaces carry only the project id; the project key that groups and colors projects
+    // comes from the project list. Reload it whenever a workspace names a project not seen yet.
+    const loadProjects = () => {
+      loadingProjects ??= paseo.projects
+        .list()
+        .then(({ projects }) => {
+          viewKeys = viewKeysFor(serverId, projects);
+          publish();
+        }, fail)
+        .finally(() => {
+          loadingProjects = null;
+        });
+    };
+    const ensureProject = (workspace: Workspace) => {
+      if (!viewKeys.has(workspace.projectId)) loadProjects();
+    };
     // The subscription snapshot holds the first page only; the rest are read once per snapshot.
     const loadRest = async (cursor: string | null) => {
       while (cursor && !disposed) {
@@ -106,6 +155,7 @@ export function useHostWorkspaces(serverId: string, online: boolean): HostWorksp
       workspaces.clear();
       for (const workspace of snapshot.entries) workspaces.set(workspace.id, workspace);
       publish();
+      loadProjects();
       const { hasMore, nextCursor } = snapshot.pageInfo;
       if (hasMore) loadRest(nextCursor).then(publish, fail);
     };
@@ -125,8 +175,12 @@ export function useHostWorkspaces(serverId: string, online: boolean): HostWorksp
           update: (message) => {
             if (message.type !== "workspace_update") return;
             const update = message.payload;
-            if (update.kind === "upsert") workspaces.set(update.workspace.id, update.workspace);
-            else workspaces.delete(update.id);
+            if (update.kind === "upsert") {
+              workspaces.set(update.workspace.id, update.workspace);
+              ensureProject(update.workspace);
+            } else {
+              workspaces.delete(update.id);
+            }
             publish();
           },
           error: fail,
