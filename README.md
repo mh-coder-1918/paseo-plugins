@@ -99,3 +99,7 @@ To add a plugin, run `paseo plugin init "$PWD/plugins/<name>"` and add it to the
 
 - `pdf-viewer` also has **PDF viewer** and **PDFs** tabs from before Paseo 0.13. They draw pages with macOS PDFKit, so they only work when the daemon runs on macOS. Clicking PDFs in **Files** works on any system.
 - `active-projects` runs only in the app and lists projects from every host the app is connected to, so installing it on one daemon should be enough while the app is connected to that daemon. Its list sits above the Workspaces list because plugins can only add rows to the top of the sidebar. Install it on one daemon only, or the list may appear once per daemon.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
