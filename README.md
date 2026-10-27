@@ -6,6 +6,7 @@ My own [Paseo](https://paseo.sh) plugins. Each plugin lives in its own folder un
 | --- | --- | --- |
 | [`pdf-viewer`](plugins/pdf-viewer/OVERVIEW.md) | Opens PDFs in the file tab when you click them in **Files** | Paseo 0.13+ on the daemon and the app |
 | [`active-projects`](plugins/active-projects/OVERVIEW.md) | Lists projects with open chats or agents at the top of the sidebar, across all hosts | Paseo 0.13+ on the daemon and the app |
+| [`prompt-buttons`](plugins/prompt-buttons/OVERVIEW.md) | Your own composer pills: label, icon and prompt each, for every chat or only chosen projects | Paseo 0.13+ on the daemon and the app |
 
 ## Install on a machine (VPS or other computer)
 
@@ -47,7 +48,7 @@ ssh-keygen -t ed25519 -N "" -f ~/.ssh/paseo_plugins -C "paseo-plugins $(hostname
 cat ~/.ssh/paseo_plugins.pub
 ```
 
-Add the printed key in GitHub under **this repo → Settings → Deploy keys → Add deploy key**, with write access off. Then on the machine give the key its own host alias, so it doesn't replace any other GitHub key the machine uses:
+Add the printed key in GitHub under **this repo → Settings → Deploy keys → Add deploy key**, with write access off. That page needs admin access to the repository, so ask the owner if you only have read access. Then on the machine give the key its own host alias, so it doesn't replace any other GitHub key the machine uses:
 
 ```bash
 cat >> ~/.ssh/config <<'EOF'
@@ -124,13 +125,13 @@ paseo plugin update pdf-viewer
 
 ## Develop
 
-On the Mac, the plugin is installed straight from this folder, so edits only need a reload:
+On the machine you develop on, the plugin is installed straight from its folder in this repository, so edits only need a reload:
 
 ```bash
-cd plugins/pdf-viewer
+cd plugins/<name>
 npm install          # once, for typechecking
 npm run typecheck
-paseo plugin reload pdf-viewer
+paseo plugin reload <name>
 ```
 
 Commit and push when it works, then run `paseo plugin update` on the other machines.
