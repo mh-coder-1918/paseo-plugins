@@ -5,8 +5,8 @@ import {
   getPaseoClient,
   useHosts,
 } from "@getpaseo/plugin/client";
-import { Icon, copyText, useToast } from "@getpaseo/plugin/client/ui";
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { Icon, ScrollView, copyText, useToast } from "@getpaseo/plugin/client/ui";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type GestureResponderEvent, Pressable, Text, View } from "react-native";
 import {
   type ActiveChat,
@@ -14,10 +14,17 @@ import {
   type HostWorkspacesState,
   currentBranch,
   groupByProject,
+  projectViewKey,
   useHostWorkspaces,
 } from "./active-projects";
 import { type HostBadge, hostBadges } from "./host-badges";
 import { type SidebarPalette, shortAge, sidebarPalette } from "./look";
+import {
+  canHideNativeWorkspaces,
+  setNativeWorkspacesHidden,
+  useListMaxHeight,
+  useNativeWorkspacesHidden,
+} from "./native-workspaces";
 import { ICON_BOX, ProjectAvatar, WorkspaceStatusIndicator } from "./status-indicator";
 import { ContextMenu, type MenuAction, RenameDialog } from "./workspace-menu";
 
@@ -43,6 +50,16 @@ function eventPoint(event: ContextMenuEvent | GestureResponderEvent): Point {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Re-renders every interval so relative times stay current. */
+function useNow(intervalMs: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(timer);
+  }, [intervalMs]);
+  return now;
 }
 
 /** Feeds one host's workspaces up to the sidebar item; renders nothing. */
@@ -122,18 +139,21 @@ function WorkspaceRow({
   chat,
   badge,
   palette,
+  now,
   onOpen,
   onContextMenu,
 }: {
   chat: ActiveChat;
   badge: HostBadge | undefined;
   palette: SidebarPalette;
+  now: number;
   onOpen(): void;
   onContextMenu(point: Point): void;
 }) {
   const { workspace } = chat;
   const title = workspace.title || workspace.name;
-  const age = shortAge(workspace.activityAt);
+  // Like Paseo's rows: time since the workspace entered its current status.
+  const age = shortAge(workspace.statusEnteredAt, now);
   return (
     <HoverRow
       palette={palette}
@@ -144,7 +164,7 @@ function WorkspaceRow({
         minHeight: 36,
         marginBottom: 2,
         paddingVertical: 8,
-        paddingLeft: 8,
+        paddingLeft: 16,
         paddingRight: 12,
         borderRadius: 8,
         flexDirection: "row",
@@ -171,7 +191,9 @@ function WorkspaceRow({
                 {title}
               </Text>
               {age ? (
-                <Text style={{ color: palette.foregroundExtraMuted, fontSize: 12, lineHeight: 20 }}>{age}</Text>
+                <Text style={{ height: 20, color: palette.foregroundExtraMuted, fontSize: 12, lineHeight: 20, flexShrink: 0 }}>
+                  {age}
+                </Text>
               ) : null}
             </View>
             {badge ? <HostBadgeView badge={badge} palette={palette} /> : null}
@@ -231,7 +253,12 @@ export function createActiveProjectsSidebarItem(actions: SidebarActions) {
   return function ActiveProjectsSidebarItem({ theme, host, openScreen }: PluginSidebarItemProps) {
     const hosts = useHosts();
     const toast = useToast();
-    const palette = useMemo(() => sidebarPalette(theme), [theme]);
+    const now = useNow(30_000);
+    const nativeHidden = useNativeWorkspacesHidden();
+    const listRef = useRef<View>(null);
+    const { maxHeight, measure } = useListMaxHeight(listRef, nativeHidden);
+    // Rebuilt every render: the theme can change in place when the app follows the system appearance.
+    const palette = sidebarPalette(theme);
     const [states, setStates] = useState<Record<string, HostWorkspacesState | null>>({});
     const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
     const [menu, setMenu] = useState<{ chat: ActiveChat; point: Point } | null>(null);
@@ -247,7 +274,10 @@ export function createActiveProjectsSidebarItem(actions: SidebarActions) {
       for (const { serverId, label } of hosts) {
         const state = states[serverId];
         if (state?.status === "ready") {
-          for (const workspace of state.workspaces) chats.push({ serverId, hostLabel: label, workspace });
+          for (const workspace of state.workspaces) {
+            const viewKey = projectViewKey(serverId, workspace, state.viewKeys);
+            chats.push({ serverId, hostLabel: label, viewKey, workspace });
+          }
         } else if (state?.status === "error") {
           errors.push(`${label}: ${state.error}`);
         }
@@ -300,13 +330,43 @@ export function createActiveProjectsSidebarItem(actions: SidebarActions) {
     };
 
     return (
-      <View>
+      // Same side padding as Paseo's workspace list content.
+      <View style={{ paddingHorizontal: 8 }}>
         {hosts.map((summary) => (
           <HostFeed key={summary.serverId} host={summary} onChange={onChange} />
         ))}
-        {projects.length > 0 || errors.length > 0 ? (
-          <Text style={{ color: palette.foregroundMuted, fontSize: 13, paddingHorizontal: 8, paddingTop: 12, paddingBottom: 6 }}>
-            Active projects
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "space-between",
+            paddingLeft: 4,
+            paddingTop: 12,
+            paddingBottom: 8,
+          }}
+        >
+          <Text style={{ color: palette.foregroundMuted, fontSize: 12 }}>Active projects</Text>
+          {canHideNativeWorkspaces ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={nativeHidden ? "Show Workspaces list" : "Hide Workspaces list"}
+              onPress={() => setNativeWorkspacesHidden(!nativeHidden)}
+              style={({ pressed }) => ({
+                width: 24,
+                height: 24,
+                borderRadius: 6,
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor: pressed ? palette.hover : "transparent",
+              })}
+            >
+              <Icon name={nativeHidden ? "Eye" : "EyeOff"} size={14} color={palette.foregroundMuted} />
+            </Pressable>
+          ) : null}
+        </View>
+        {projects.length === 0 && errors.length === 0 ? (
+          <Text style={{ color: palette.foregroundExtraMuted, fontSize: 12, paddingLeft: 4, paddingBottom: 8 }}>
+            No open workspaces
           </Text>
         ) : null}
         {errors.map((error) => (
@@ -314,36 +374,41 @@ export function createActiveProjectsSidebarItem(actions: SidebarActions) {
             {error}
           </Text>
         ))}
-        {projects.map((project) => {
-          const isCollapsed = collapsed[project.viewKey] ?? false;
-          return (
-            <View key={project.viewKey}>
-              <ProjectRow
-                project={project}
-                collapsed={isCollapsed}
-                palette={palette}
-                onToggle={() => setCollapsed((current) => ({ ...current, [project.viewKey]: !isCollapsed }))}
-              />
-              {isCollapsed
-                ? null
-                : project.chats.map((chat) => (
-                    <WorkspaceRow
-                      key={`${chat.serverId}:${chat.workspace.id}`}
-                      chat={chat}
-                      badge={badges.get(chat.serverId)}
-                      palette={palette}
-                      onOpen={() =>
-                        openScreen({
-                          screenId: OPEN_WORKSPACE_SCREEN,
-                          params: { serverId: chat.serverId, workspaceId: chat.workspace.id },
-                        })
-                      }
-                      onContextMenu={(point) => setMenu({ chat, point })}
-                    />
-                  ))}
-            </View>
-          );
-        })}
+        <View ref={listRef} onLayout={measure}>
+          <ScrollView style={{ maxHeight }} showsVerticalScrollIndicator={false}>
+            {projects.map((project) => {
+              const isCollapsed = collapsed[project.viewKey] ?? false;
+              return (
+                <View key={project.viewKey}>
+                  <ProjectRow
+                    project={project}
+                    collapsed={isCollapsed}
+                    palette={palette}
+                    onToggle={() => setCollapsed((current) => ({ ...current, [project.viewKey]: !isCollapsed }))}
+                  />
+                  {isCollapsed
+                    ? null
+                    : project.chats.map((chat) => (
+                        <WorkspaceRow
+                          key={`${chat.serverId}:${chat.workspace.id}`}
+                          chat={chat}
+                          badge={badges.get(chat.serverId)}
+                          palette={palette}
+                          now={now}
+                          onOpen={() =>
+                            openScreen({
+                              screenId: OPEN_WORKSPACE_SCREEN,
+                              params: { serverId: chat.serverId, workspaceId: chat.workspace.id },
+                            })
+                          }
+                          onContextMenu={(point) => setMenu({ chat, point })}
+                        />
+                      ))}
+                </View>
+              );
+            })}
+          </ScrollView>
+        </View>
         <ContextMenu
           position={menu?.point ?? null}
           actions={menu ? menuActions(menu.chat) : []}
