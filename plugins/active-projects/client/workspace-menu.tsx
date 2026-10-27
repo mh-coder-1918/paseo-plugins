@@ -7,6 +7,8 @@ export interface MenuAction {
   id: string;
   label: string;
   icon: string;
+  /** Drawn with a check at the end, for menus that pick one item out of several. */
+  selected?: boolean;
   onSelect(): void;
 }
 
@@ -72,7 +74,8 @@ export function ContextMenu({
               }}
             >
               <Icon name={action.icon} size={16} color={palette.foregroundMuted} />
-              <Text style={{ color: palette.foreground, fontSize: 14 }}>{action.label}</Text>
+              <Text style={{ flex: 1, minWidth: 0, color: palette.foreground, fontSize: 14 }}>{action.label}</Text>
+              {action.selected ? <Icon name="Check" size={16} color={palette.foregroundMuted} /> : null}
             </Pressable>
           ))}
         </View>

@@ -17,8 +17,10 @@ import {
   projectViewKey,
   useHostWorkspaces,
 } from "./active-projects";
+import { isCurrent, useCurrentWorkspace } from "./current-workspace";
 import { type HostBadge, hostBadges } from "./host-badges";
 import { type SidebarPalette, shortAge, sidebarPalette } from "./look";
+import { SORT_MODES, setSortMode, useSortMode } from "./project-sort";
 import {
   canHideNativeWorkspaces,
   setNativeWorkspacesHidden,
@@ -82,6 +84,7 @@ function HostFeed({
 function HoverRow({
   palette,
   style,
+  selected = false,
   onPress,
   onContextMenu,
   accessibilityLabel,
@@ -89,6 +92,8 @@ function HoverRow({
 }: {
   palette: SidebarPalette;
   style: object;
+  /** Keeps the row filled in while it is the workspace the app is showing. */
+  selected?: boolean;
   onPress(): void;
   onContextMenu?(point: Point): void;
   accessibilityLabel: string;
@@ -114,6 +119,7 @@ function HoverRow({
       style={({ pressed }) => [
         style,
         { userSelect: "none" },
+        selected && { backgroundColor: palette.hover },
         (hovered || pressed) && { backgroundColor: pressed ? palette.pressed : palette.hover },
       ]}
       {...contextMenuProps}
@@ -140,6 +146,7 @@ function WorkspaceRow({
   badge,
   palette,
   now,
+  selected,
   onOpen,
   onContextMenu,
 }: {
@@ -147,6 +154,8 @@ function WorkspaceRow({
   badge: HostBadge | undefined;
   palette: SidebarPalette;
   now: number;
+  /** True for the workspace the app is showing. */
+  selected: boolean;
   onOpen(): void;
   onContextMenu(point: Point): void;
 }) {
@@ -157,6 +166,7 @@ function WorkspaceRow({
   return (
     <HoverRow
       palette={palette}
+      selected={selected}
       accessibilityLabel={`Open ${title}`}
       onPress={onOpen}
       onContextMenu={onContextMenu}
@@ -185,7 +195,8 @@ function WorkspaceRow({
                   color: palette.foreground,
                   fontSize: 14,
                   lineHeight: 20,
-                  opacity: hovered ? 1 : 0.76,
+                  opacity: hovered || selected ? 1 : 0.76,
+                  fontWeight: selected ? "500" : "400",
                 }}
               >
                 {title}
@@ -208,11 +219,14 @@ function ProjectRow({
   project,
   collapsed,
   palette,
+  holdsCurrent,
   onToggle,
 }: {
   project: ActiveProject;
   collapsed: boolean;
   palette: SidebarPalette;
+  /** True when the workspace the app is showing is one of this project's. */
+  holdsCurrent: boolean;
   onToggle(): void;
 }) {
   return (
@@ -240,7 +254,16 @@ function ProjectRow({
               <ProjectAvatar viewKey={project.viewKey} name={project.name} />
             )}
           </View>
-          <Text numberOfLines={1} style={{ flexShrink: 1, minWidth: 0, color: palette.foregroundMuted, fontSize: 14 }}>
+          <Text
+            numberOfLines={1}
+            style={{
+              flexShrink: 1,
+              minWidth: 0,
+              // Collapsed rows still say which project the open workspace is in.
+              color: holdsCurrent && collapsed ? palette.foreground : palette.foregroundMuted,
+              fontSize: 14,
+            }}
+          >
             {project.name}
           </Text>
         </>
@@ -249,12 +272,22 @@ function ProjectRow({
   );
 }
 
+const headerButton = {
+  width: 24,
+  height: 24,
+  borderRadius: 6,
+  alignItems: "center",
+  justifyContent: "center",
+} as const;
+
 export function createActiveProjectsSidebarItem(actions: SidebarActions) {
   return function ActiveProjectsSidebarItem({ theme, host, openScreen }: PluginSidebarItemProps) {
     const hosts = useHosts();
     const toast = useToast();
     const now = useNow(30_000);
     const nativeHidden = useNativeWorkspacesHidden();
+    const sort = useSortMode();
+    const current = useCurrentWorkspace();
     const listRef = useRef<View>(null);
     const { maxHeight, measure } = useListMaxHeight(listRef, nativeHidden);
     // Rebuilt every render: the theme can change in place when the app follows the system appearance.
@@ -262,6 +295,7 @@ export function createActiveProjectsSidebarItem(actions: SidebarActions) {
     const [states, setStates] = useState<Record<string, HostWorkspacesState | null>>({});
     const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
     const [menu, setMenu] = useState<{ chat: ActiveChat; point: Point } | null>(null);
+    const [sortMenu, setSortMenu] = useState<Point | null>(null);
     const [renaming, setRenaming] = useState<ActiveChat | null>(null);
     const onChange = useCallback((serverId: string, state: HostWorkspacesState | null) => {
       setStates((current) => ({ ...current, [serverId]: state }));
@@ -282,8 +316,8 @@ export function createActiveProjectsSidebarItem(actions: SidebarActions) {
           errors.push(`${label}: ${state.error}`);
         }
       }
-      return { projects: groupByProject(chats), errors };
-    }, [hosts, states]);
+      return { projects: groupByProject(chats, sort), errors };
+    }, [hosts, states, sort]);
 
     const run = (task: () => Promise<unknown>, success?: string) => {
       task().then(
@@ -346,23 +380,26 @@ export function createActiveProjectsSidebarItem(actions: SidebarActions) {
           }}
         >
           <Text style={{ color: palette.foregroundMuted, fontSize: 12 }}>Active projects</Text>
-          {canHideNativeWorkspaces ? (
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={nativeHidden ? "Show Workspaces list" : "Hide Workspaces list"}
-              onPress={() => setNativeWorkspacesHidden(!nativeHidden)}
-              style={({ pressed }) => ({
-                width: 24,
-                height: 24,
-                borderRadius: 6,
-                alignItems: "center",
-                justifyContent: "center",
-                backgroundColor: pressed ? palette.hover : "transparent",
-              })}
+              accessibilityLabel="Sort projects"
+              onPress={(event) => setSortMenu(eventPoint(event))}
+              style={({ pressed }) => [headerButton, { backgroundColor: pressed ? palette.hover : "transparent" }]}
             >
-              <Icon name={nativeHidden ? "Eye" : "EyeOff"} size={14} color={palette.foregroundMuted} />
+              <Icon name="ArrowUpDown" size={14} color={palette.foregroundMuted} />
             </Pressable>
-          ) : null}
+            {canHideNativeWorkspaces ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={nativeHidden ? "Show Workspaces list" : "Hide Workspaces list"}
+                onPress={() => setNativeWorkspacesHidden(!nativeHidden)}
+                style={({ pressed }) => [headerButton, { backgroundColor: pressed ? palette.hover : "transparent" }]}
+              >
+                <Icon name={nativeHidden ? "Eye" : "EyeOff"} size={14} color={palette.foregroundMuted} />
+              </Pressable>
+            ) : null}
+          </View>
         </View>
         {projects.length === 0 && errors.length === 0 ? (
           <Text style={{ color: palette.foregroundExtraMuted, fontSize: 12, paddingLeft: 4, paddingBottom: 8 }}>
@@ -384,6 +421,9 @@ export function createActiveProjectsSidebarItem(actions: SidebarActions) {
                     project={project}
                     collapsed={isCollapsed}
                     palette={palette}
+                    holdsCurrent={project.chats.some((chat) =>
+                      isCurrent(current, chat.serverId, chat.workspace.id),
+                    )}
                     onToggle={() => setCollapsed((current) => ({ ...current, [project.viewKey]: !isCollapsed }))}
                   />
                   {isCollapsed
@@ -395,6 +435,7 @@ export function createActiveProjectsSidebarItem(actions: SidebarActions) {
                           badge={badges.get(chat.serverId)}
                           palette={palette}
                           now={now}
+                          selected={isCurrent(current, chat.serverId, chat.workspace.id)}
                           onOpen={() =>
                             openScreen({
                               screenId: OPEN_WORKSPACE_SCREEN,
@@ -409,6 +450,18 @@ export function createActiveProjectsSidebarItem(actions: SidebarActions) {
             })}
           </ScrollView>
         </View>
+        <ContextMenu
+          position={sortMenu}
+          actions={SORT_MODES.map((mode) => ({
+            id: mode.id,
+            label: mode.label,
+            icon: mode.icon,
+            selected: mode.id === sort,
+            onSelect: () => setSortMode(mode.id),
+          }))}
+          palette={palette}
+          onClose={() => setSortMenu(null)}
+        />
         <ContextMenu
           position={menu?.point ?? null}
           actions={menu ? menuActions(menu.chat) : []}

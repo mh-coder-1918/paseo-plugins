@@ -1,5 +1,6 @@
 import { getPaseoClient } from "@getpaseo/plugin/client";
 import { useEffect, useState } from "react";
+import type { SortMode } from "./project-sort";
 
 type PaseoApi = ReturnType<typeof getPaseoClient>;
 type WorkspaceList = Awaited<ReturnType<PaseoApi["workspaces"]["list"]>>;
@@ -72,8 +73,16 @@ export function currentBranch(workspace: Workspace): string | null {
   return workspace.gitRuntime?.currentBranch ?? null;
 }
 
-/** Projects with at least one open workspace, most recently active first. */
-export function groupByProject(chats: Iterable<ActiveChat>): ActiveProject[] {
+/** Orders projects the way the sidebar's sort choice asks for; ties fall back to the name. */
+function compareProjects(sort: SortMode): (a: ActiveProject, b: ActiveProject) => number {
+  const byName = (a: ActiveProject, b: ActiveProject) => a.name.localeCompare(b.name);
+  if (sort === "name") return byName;
+  if (sort === "chats") return (a, b) => b.chats.length - a.chats.length || byName(a, b);
+  return (a, b) => newerFirst(a.lastActivityAt, b.lastActivityAt) || byName(a, b);
+}
+
+/** Projects with at least one open workspace, in the order the sort choice asks for. */
+export function groupByProject(chats: Iterable<ActiveChat>, sort: SortMode = "recent"): ActiveProject[] {
   const projects = new Map<string, ActiveProject>();
   for (const chat of chats) {
     const { workspace } = chat;
@@ -93,9 +102,7 @@ export function groupByProject(chats: Iterable<ActiveChat>): ActiveProject[] {
   for (const project of result) {
     project.chats.sort((a, b) => newerFirst(a.workspace.activityAt, b.workspace.activityAt));
   }
-  return result.sort(
-    (a, b) => newerFirst(a.lastActivityAt, b.lastActivityAt) || a.name.localeCompare(b.name),
-  );
+  return result.sort(compareProjects(sort));
 }
 
 function errorMessage(error: unknown): string {
