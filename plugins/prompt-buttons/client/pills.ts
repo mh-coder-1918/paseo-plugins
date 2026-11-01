@@ -10,8 +10,15 @@ type WorkspaceList = Awaited<ReturnType<PaseoApi["workspaces"]["list"]>>;
 // The daemon rejects pages larger than 200; later pages are fetched with the cursor.
 const PAGE_LIMIT = 200;
 
-/** The buttons this host has configured, or none when they cannot be read. */
-export async function readButtons(client: PluginClientContext): Promise<PromptButton[]> {
+// Retry delays for reading the buttons while the daemon is still starting or reconnecting.
+const RETRY_FIRST_MS = 1_000;
+const RETRY_MAX_MS = 30_000;
+
+/**
+ * The buttons this host has configured, none when the stored settings are invalid, or null
+ * when the daemon could not be reached.
+ */
+export async function readButtons(client: PluginClientContext): Promise<PromptButton[] | null> {
   try {
     const result = await client.rpc(promptButtonsRpc.read, {});
     if (result.status !== "ready") return [];
@@ -19,7 +26,7 @@ export async function readButtons(client: PluginClientContext): Promise<PromptBu
     return parsed.success ? [...parsed.data.buttons] : [];
   } catch (error) {
     console.error("prompt-buttons: reading the buttons failed", error);
-    return [];
+    return null;
   }
 }
 
@@ -227,8 +234,31 @@ export function installPromptPills(client: PluginClientContext) {
     });
   }
 
-  readButtons(client).then(setButtons, fail("reading the buttons"));
-  stops.push(onButtonsSaved(setButtons));
+  // The client can start before the daemon is up, so a failed read is retried until it lands.
+  {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = async (delay: number) => {
+      const next = await readButtons(client);
+      if (disposed || settled) return;
+      if (next) {
+        settled = true;
+        setButtons(next);
+      } else {
+        timer = setTimeout(() => void load(Math.min(delay * 2, RETRY_MAX_MS)), delay);
+      }
+    };
+    void load(RETRY_FIRST_MS);
+    stops.push(() => clearTimeout(timer));
+    stops.push(
+      onButtonsSaved((saved) => {
+        // A save is newer than anything a pending read would bring back.
+        settled = true;
+        clearTimeout(timer);
+        setButtons(saved);
+      }),
+    );
+  }
 
   return () => {
     disposed = true;
