@@ -1,0 +1,8 @@
+{
+  "id": "scheduled-send",
+  "name": "Send later",
+  "media": [],
+  "requirements": {
+    "paseo": ">=0.15.0-beta.1"
+  }
+}
