@@ -24,9 +24,11 @@ interface StorageLike {
 const STYLE_ID = "active-projects-hide-native-workspaces";
 const PREFERENCE_KEY = "active-projects:hide-native-workspaces";
 // Hide the container's contents but keep the container: it is the flexible space that holds the
-// sidebar footer at the bottom.
+// sidebar footer at the bottom. Paseo 0.15 renders a different list when the sidebar is grouped
+// by status, so both are covered.
 const HIDE_RULE =
-  'div:has(> [data-testid="sidebar-project-workspace-list-scroll"]) > * { display: none !important; }';
+  'div:has(> [data-testid="sidebar-project-workspace-list-scroll"]) > *, ' +
+  'div:has(> [data-testid="sidebar-status-list-scroll"]) > * { display: none !important; }';
 
 const dom = (globalThis as { document?: DocumentLike }).document;
 const storage = (globalThis as { localStorage?: StorageLike }).localStorage;
