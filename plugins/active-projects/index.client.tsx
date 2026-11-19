@@ -1,22 +1,19 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
-import {
-  OPEN_WORKSPACE_SCREEN,
-  OpenWorkspaceScreen,
-  createActiveProjectsSidebarItem,
-} from "./client/active-projects-sidebar";
-import { installNativeWorkspacesStyle } from "./client/native-workspaces";
-import { openInFileManagerRpc } from "./shared/rpc";
+import { createActiveProjectsView } from "./client/active-projects-view";
+import { openInFileManagerRpc, pluginHostRpc } from "./shared/rpc";
 
 export default function contribute(client: PluginClientContext) {
-  client.addScreen({ id: OPEN_WORKSPACE_SCREEN, title: "Opening workspace", Component: OpenWorkspaceScreen });
-  client.addSidebarHeaderItem({
+  return client.addSidebarView({
     id: "active-projects",
     title: "Active projects",
-    Component: createActiveProjectsSidebarItem({
+    description: "Only projects with open workspaces, from every host",
+    Component: createActiveProjectsView({
+      async pluginHostId() {
+        return (await client.rpc(pluginHostRpc, {})).serverId;
+      },
       async openInFileManager(path) {
         await client.rpc(openInFileManagerRpc, { path });
       },
     }),
   });
-  return installNativeWorkspacesStyle();
 }
