@@ -1,12 +1,12 @@
 import {
   type PluginHostSummary,
-  type PluginScreenProps,
-  type PluginSidebarItemProps,
+  type PluginSidebarViewProps,
+  type WorkspaceRef,
   getPaseoClient,
   useHosts,
 } from "@getpaseo/plugin/client";
 import { Icon, ScrollView, copyText, useToast } from "@getpaseo/plugin/client/ui";
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { type GestureResponderEvent, Pressable, Text, View } from "react-native";
 import {
   type ActiveChat,
@@ -17,24 +17,63 @@ import {
   projectViewKey,
   useHostWorkspaces,
 } from "./active-projects";
-import { isCurrent, useCurrentWorkspace } from "./current-workspace";
 import { type HostBadge, hostBadges } from "./host-badges";
 import { type SidebarPalette, shortAge, sidebarPalette } from "./look";
 import { SORT_MODES, setSortMode, useSortMode } from "./project-sort";
-import {
-  canHideNativeWorkspaces,
-  setNativeWorkspacesHidden,
-  useListMaxHeight,
-  useNativeWorkspacesHidden,
-} from "./native-workspaces";
 import { ICON_BOX, ProjectAvatar, WorkspaceStatusIndicator } from "./status-indicator";
 import { ContextMenu, type MenuAction, RenameDialog } from "./workspace-menu";
 
-export const OPEN_WORKSPACE_SCREEN = "open-workspace";
-
 export interface SidebarActions {
+  /** Server id of the daemon this plugin runs on. */
+  pluginHostId(): Promise<string>;
   /** Opens a directory on the host this plugin runs on. */
   openInFileManager(path: string): Promise<void>;
+}
+
+/** Same shape and key as the refs Paseo hands to plugins. */
+function workspaceRef(serverId: string, workspaceId: string): WorkspaceRef {
+  return { kind: "workspace", key: JSON.stringify([serverId, workspaceId]), hostId: serverId, id: workspaceId };
+}
+
+function isActive(active: WorkspaceRef | null, serverId: string, workspaceId: string): boolean {
+  return active?.hostId === serverId && active.id === workspaceId;
+}
+
+// Retry delays for asking the daemon for its server id while it is still starting or reconnecting.
+const RETRY_FIRST_MS = 1_000;
+const RETRY_MAX_MS = 30_000;
+
+// The host does not change while the plugin runs, so remounting the view reuses the answer.
+let knownPluginHostId: string | null = null;
+
+/**
+ * The plugin's own host, or null until the daemon answers. Until then every host gets its badge
+ * and Open in file manager is not offered.
+ */
+function usePluginHostId(actions: SidebarActions): string | null {
+  const [hostId, setHostId] = useState<string | null>(knownPluginHostId);
+  useEffect(() => {
+    if (knownPluginHostId) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = (delay: number) => {
+      actions.pluginHostId().then(
+        (id) => {
+          knownPluginHostId = id;
+          if (!cancelled) setHostId(id);
+        },
+        () => {
+          if (!cancelled) timer = setTimeout(() => load(Math.min(delay * 2, RETRY_MAX_MS)), delay);
+        },
+      );
+    };
+    load(RETRY_FIRST_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [actions]);
+  return hostId;
 }
 
 type Point = { x: number; y: number };
@@ -64,7 +103,7 @@ function useNow(intervalMs: number): number {
   return now;
 }
 
-/** Feeds one host's workspaces up to the sidebar item; renders nothing. */
+/** Feeds one host's workspaces up to the view; renders nothing. */
 function HostFeed({
   host,
   onChange,
@@ -280,16 +319,14 @@ const headerButton = {
   justifyContent: "center",
 } as const;
 
-export function createActiveProjectsSidebarItem(actions: SidebarActions) {
-  return function ActiveProjectsSidebarItem({ theme, host, openScreen }: PluginSidebarItemProps) {
+export function createActiveProjectsView(actions: SidebarActions) {
+  return function ActiveProjectsView({ theme, active, navigation }: PluginSidebarViewProps) {
     const hosts = useHosts();
     const toast = useToast();
     const now = useNow(30_000);
-    const nativeHidden = useNativeWorkspacesHidden();
     const sort = useSortMode();
-    const current = useCurrentWorkspace();
-    const listRef = useRef<View>(null);
-    const { maxHeight, measure } = useListMaxHeight(listRef, nativeHidden);
+    const pluginHostId = usePluginHostId(actions);
+    const current = active.workspace;
     // Rebuilt every render: the theme can change in place when the app follows the system appearance.
     const palette = sidebarPalette(theme);
     const [states, setStates] = useState<Record<string, HostWorkspacesState | null>>({});
@@ -301,7 +338,7 @@ export function createActiveProjectsSidebarItem(actions: SidebarActions) {
       setStates((current) => ({ ...current, [serverId]: state }));
     }, []);
 
-    const badges = useMemo(() => hostBadges(hosts, host.id), [hosts, host.id]);
+    const badges = useMemo(() => hostBadges(hosts, pluginHostId), [hosts, pluginHostId]);
     const { projects, errors } = useMemo(() => {
       const chats: ActiveChat[] = [];
       const errors: string[] = [];
@@ -342,7 +379,7 @@ export function createActiveProjectsSidebarItem(actions: SidebarActions) {
         });
       }
       items.push({ id: "rename", label: "Rename workspace", icon: "Pencil", onSelect: () => setRenaming(chat) });
-      if (serverId === host.id) {
+      if (serverId === pluginHostId) {
         items.push({
           id: "open-in-file-manager",
           label: "Open in file manager",
@@ -364,8 +401,8 @@ export function createActiveProjectsSidebarItem(actions: SidebarActions) {
     };
 
     return (
-      // Same side padding as Paseo's workspace list content.
-      <View style={{ paddingHorizontal: 8 }}>
+      // Fills the sidebar's workspace list slot, with the same side padding as Paseo's own list.
+      <View style={{ flex: 1, minHeight: 0, paddingHorizontal: 8 }}>
         {hosts.map((summary) => (
           <HostFeed key={summary.serverId} host={summary} onChange={onChange} />
         ))}
@@ -389,16 +426,6 @@ export function createActiveProjectsSidebarItem(actions: SidebarActions) {
             >
               <Icon name="ArrowUpDown" size={14} color={palette.foregroundMuted} />
             </Pressable>
-            {canHideNativeWorkspaces ? (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={nativeHidden ? "Show Workspaces list" : "Hide Workspaces list"}
-                onPress={() => setNativeWorkspacesHidden(!nativeHidden)}
-                style={({ pressed }) => [headerButton, { backgroundColor: pressed ? palette.hover : "transparent" }]}
-              >
-                <Icon name={nativeHidden ? "Eye" : "EyeOff"} size={14} color={palette.foregroundMuted} />
-              </Pressable>
-            ) : null}
           </View>
         </View>
         {projects.length === 0 && errors.length === 0 ? (
@@ -411,45 +438,38 @@ export function createActiveProjectsSidebarItem(actions: SidebarActions) {
             {error}
           </Text>
         ))}
-        <View ref={listRef} onLayout={measure}>
-          <ScrollView style={{ maxHeight }} showsVerticalScrollIndicator={false}>
-            {projects.map((project) => {
-              const isCollapsed = collapsed[project.viewKey] ?? false;
-              return (
-                <View key={project.viewKey}>
-                  <ProjectRow
-                    project={project}
-                    collapsed={isCollapsed}
-                    palette={palette}
-                    holdsCurrent={project.chats.some((chat) =>
-                      isCurrent(current, chat.serverId, chat.workspace.id),
-                    )}
-                    onToggle={() => setCollapsed((current) => ({ ...current, [project.viewKey]: !isCollapsed }))}
-                  />
-                  {isCollapsed
-                    ? null
-                    : project.chats.map((chat) => (
-                        <WorkspaceRow
-                          key={`${chat.serverId}:${chat.workspace.id}`}
-                          chat={chat}
-                          badge={badges.get(chat.serverId)}
-                          palette={palette}
-                          now={now}
-                          selected={isCurrent(current, chat.serverId, chat.workspace.id)}
-                          onOpen={() =>
-                            openScreen({
-                              screenId: OPEN_WORKSPACE_SCREEN,
-                              params: { serverId: chat.serverId, workspaceId: chat.workspace.id },
-                            })
-                          }
-                          onContextMenu={(point) => setMenu({ chat, point })}
-                        />
-                      ))}
-                </View>
-              );
-            })}
-          </ScrollView>
-        </View>
+        <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
+          {projects.map((project) => {
+            const isCollapsed = collapsed[project.viewKey] ?? false;
+            return (
+              <View key={project.viewKey}>
+                <ProjectRow
+                  project={project}
+                  collapsed={isCollapsed}
+                  palette={palette}
+                  holdsCurrent={project.chats.some((chat) =>
+                    isActive(current, chat.serverId, chat.workspace.id),
+                  )}
+                  onToggle={() => setCollapsed((current) => ({ ...current, [project.viewKey]: !isCollapsed }))}
+                />
+                {isCollapsed
+                  ? null
+                  : project.chats.map((chat) => (
+                      <WorkspaceRow
+                        key={`${chat.serverId}:${chat.workspace.id}`}
+                        chat={chat}
+                        badge={badges.get(chat.serverId)}
+                        palette={palette}
+                        now={now}
+                        selected={isActive(current, chat.serverId, chat.workspace.id)}
+                        onOpen={() => navigation.openWorkspace(workspaceRef(chat.serverId, chat.workspace.id))}
+                        onContextMenu={(point) => setMenu({ chat, point })}
+                      />
+                    ))}
+              </View>
+            );
+          })}
+        </ScrollView>
         <ContextMenu
           position={sortMenu}
           actions={SORT_MODES.map((mode) => ({
@@ -486,20 +506,4 @@ export function createActiveProjectsSidebarItem(actions: SidebarActions) {
       </View>
     );
   };
-}
-
-/** Sidebar items cannot navigate to a workspace, so a press routes through this screen. */
-export function OpenWorkspaceScreen({ params, navigation, theme }: PluginScreenProps) {
-  const { serverId, workspaceId } = params;
-  const openWorkspace = navigation?.openWorkspace;
-  useEffect(() => {
-    if (openWorkspace && workspaceId) openWorkspace({ workspaceId, serverId });
-  }, [openWorkspace, serverId, workspaceId]);
-  return (
-    <View style={{ flex: 1, padding: 24, backgroundColor: theme.colors.surface0 }}>
-      <Text style={{ color: theme.colors.foregroundMuted }}>
-        {openWorkspace ? "Opening workspace…" : "This version of Paseo cannot open workspaces from plugins."}
-      </Text>
-    </View>
-  );
 }

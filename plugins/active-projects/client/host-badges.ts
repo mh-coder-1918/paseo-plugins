@@ -27,10 +27,13 @@ function readStoredHosts(): StoredHost[] {
   }
 }
 
-/** Badges per server id. The local host shows none unless set otherwise, as in Paseo's sidebar. */
+/**
+ * Badges per server id. The local host shows none unless set otherwise, as in Paseo's sidebar.
+ * While the local host is unknown (null), every host gets its badge.
+ */
 export function hostBadges(
   hosts: readonly PluginHostSummary[],
-  localServerId: string,
+  localServerId: string | null,
 ): Map<string, HostBadge> {
   const stored = new Map<string, StoredHost>();
   for (const host of readStoredHosts()) {
