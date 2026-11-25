@@ -18,12 +18,23 @@ import {
   useHostWorkspaces,
 } from "./active-projects";
 import { type HostBadge, hostBadges } from "./host-badges";
+import {
+  LATER_OPTIONS,
+  type LaterActions,
+  type LaterEntry,
+  isWaiting,
+  laterKey,
+  returnsAt,
+  setLaterCollapsed,
+  useLaterCollapsed,
+  useLaterEntries,
+} from "./later";
 import { type SidebarPalette, shortAge, sidebarPalette } from "./look";
 import { SORT_MODES, setSortMode, useSortMode } from "./project-sort";
 import { ICON_BOX, ProjectAvatar, WorkspaceStatusIndicator } from "./status-indicator";
 import { ContextMenu, type MenuAction, RenameDialog } from "./workspace-menu";
 
-export interface SidebarActions {
+export interface SidebarActions extends LaterActions {
   /** Server id of the daemon this plugin runs on. */
   pluginHostId(): Promise<string>;
   /** Opens a directory on the host this plugin runs on. */
@@ -186,6 +197,8 @@ function WorkspaceRow({
   palette,
   now,
   selected,
+  trailing,
+  detail,
   onOpen,
   onContextMenu,
 }: {
@@ -195,13 +208,17 @@ function WorkspaceRow({
   now: number;
   /** True for the workspace the app is showing. */
   selected: boolean;
+  /** Replaces the age on the right, e.g. when a set-aside chat comes back. */
+  trailing?: string | null;
+  /** Shown under the title before the host badge, e.g. the project of a set-aside chat. */
+  detail?: string;
   onOpen(): void;
   onContextMenu(point: Point): void;
 }) {
   const { workspace } = chat;
   const title = workspace.title || workspace.name;
   // Like Paseo's rows: time since the workspace entered its current status.
-  const age = shortAge(workspace.statusEnteredAt, now);
+  const age = trailing === undefined ? shortAge(workspace.statusEnteredAt, now) : trailing;
   return (
     <HoverRow
       palette={palette}
@@ -246,7 +263,16 @@ function WorkspaceRow({
                 </Text>
               ) : null}
             </View>
-            {badge ? <HostBadgeView badge={badge} palette={palette} /> : null}
+            {detail || badge ? (
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8, minWidth: 0 }}>
+                {detail ? (
+                  <Text numberOfLines={1} style={{ flexShrink: 1, minWidth: 0, color: palette.foregroundMuted, fontSize: 12 }}>
+                    {detail}
+                  </Text>
+                ) : null}
+                {badge ? <HostBadgeView badge={badge} palette={palette} /> : null}
+              </View>
+            ) : null}
           </View>
         </>
       )}
@@ -311,6 +337,64 @@ function ProjectRow({
   );
 }
 
+function LaterHeaderRow({
+  count,
+  collapsed,
+  palette,
+  holdsCurrent,
+  onToggle,
+}: {
+  count: number;
+  collapsed: boolean;
+  palette: SidebarPalette;
+  /** True when the workspace the app is showing is set aside. */
+  holdsCurrent: boolean;
+  onToggle(): void;
+}) {
+  return (
+    <HoverRow
+      palette={palette}
+      accessibilityLabel={`${collapsed ? "Show" : "Hide"} chats set aside for later`}
+      onPress={onToggle}
+      style={{
+        minHeight: 36,
+        marginTop: 8,
+        marginBottom: 4,
+        paddingVertical: 8,
+        paddingHorizontal: 8,
+        borderRadius: 8,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+      }}
+    >
+      {(hovered) => (
+        <>
+          <View style={{ width: ICON_BOX, height: 20, alignItems: "center", justifyContent: "center" }}>
+            <Icon
+              name={hovered ? (collapsed ? "ChevronRight" : "ChevronDown") : "AlarmClock"}
+              size={14}
+              color={palette.foregroundMuted}
+            />
+          </View>
+          <Text
+            numberOfLines={1}
+            style={{
+              flexShrink: 1,
+              minWidth: 0,
+              color: holdsCurrent && collapsed ? palette.foreground : palette.foregroundMuted,
+              fontSize: 14,
+            }}
+          >
+            Later
+          </Text>
+          <Text style={{ color: palette.foregroundExtraMuted, fontSize: 12 }}>{count}</Text>
+        </>
+      )}
+    </HoverRow>
+  );
+}
+
 const headerButton = {
   width: 24,
   height: 24,
@@ -326,12 +410,15 @@ export function createActiveProjectsView(actions: SidebarActions) {
     const now = useNow(30_000);
     const sort = useSortMode();
     const pluginHostId = usePluginHostId(actions);
+    const laterEntries = useLaterEntries(actions);
+    const laterCollapsed = useLaterCollapsed();
     const current = active.workspace;
     // Rebuilt every render: the theme can change in place when the app follows the system appearance.
     const palette = sidebarPalette(theme);
     const [states, setStates] = useState<Record<string, HostWorkspacesState | null>>({});
     const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
     const [menu, setMenu] = useState<{ chat: ActiveChat; point: Point } | null>(null);
+    const [laterMenu, setLaterMenu] = useState<{ chat: ActiveChat; point: Point } | null>(null);
     const [sortMenu, setSortMenu] = useState<Point | null>(null);
     const [renaming, setRenaming] = useState<ActiveChat | null>(null);
     const onChange = useCallback((serverId: string, state: HostWorkspacesState | null) => {
@@ -339,22 +426,42 @@ export function createActiveProjectsView(actions: SidebarActions) {
     }, []);
 
     const badges = useMemo(() => hostBadges(hosts, pluginHostId), [hosts, pluginHostId]);
-    const { projects, errors } = useMemo(() => {
+    const { projects, later, errors } = useMemo(() => {
+      const waiting = new Map<string, LaterEntry>();
+      for (const entry of laterEntries) {
+        if (isWaiting(entry, now)) waiting.set(laterKey(entry.hostId, entry.workspaceId), entry);
+      }
       const chats: ActiveChat[] = [];
+      const later: { chat: ActiveChat; entry: LaterEntry; project: string }[] = [];
       const errors: string[] = [];
       for (const { serverId, label } of hosts) {
         const state = states[serverId];
         if (state?.status === "ready") {
           for (const workspace of state.workspaces) {
             const viewKey = projectViewKey(serverId, workspace, state.viewKeys);
-            chats.push({ serverId, hostLabel: label, viewKey, workspace });
+            const chat = { serverId, hostLabel: label, viewKey, workspace };
+            const entry = waiting.get(laterKey(serverId, workspace.id));
+            if (entry) {
+              later.push({ chat, entry, project: workspace.projectCustomName || workspace.projectDisplayName });
+            } else {
+              chats.push(chat);
+            }
           }
         } else if (state?.status === "error") {
           errors.push(`${label}: ${state.error}`);
         }
       }
-      return { projects: groupByProject(chats, sort), errors };
-    }, [hosts, states, sort]);
+      // Soonest back first; chats kept until brought back by hand go last, oldest first.
+      later.sort(
+        (a, b) =>
+          (a.entry.until ?? "\uffff").localeCompare(b.entry.until ?? "\uffff") ||
+          a.entry.since.localeCompare(b.entry.since),
+      );
+      return { projects: groupByProject(chats, sort), later, errors };
+    }, [hosts, states, sort, laterEntries, now]);
+
+    const laterKeys = new Set(later.map(({ chat }) => laterKey(chat.serverId, chat.workspace.id)));
+    const laterHoldsCurrent = later.some(({ chat }) => isActive(current, chat.serverId, chat.workspace.id));
 
     const run = (task: () => Promise<unknown>, success?: string) => {
       task().then(
@@ -363,13 +470,46 @@ export function createActiveProjectsView(actions: SidebarActions) {
       );
     };
 
-    const menuActions = (chat: ActiveChat): MenuAction[] => {
+    const laterOptions = (chat: ActiveChat): MenuAction[] =>
+      LATER_OPTIONS.map((option) => ({
+        id: option.id,
+        label: option.label,
+        icon: option.icon,
+        onSelect: () => {
+          const until = option.until(new Date());
+          const when = returnsAt(until, Date.now());
+          run(
+            () => actions.setAside(chat.serverId, chat.workspace.id, until),
+            when ? `Back at ${when}` : "Set aside until you bring it back",
+          );
+        },
+      }));
+
+    const menuActions = (chat: ActiveChat, point: Point, setAside: boolean): MenuAction[] => {
       const { serverId, workspace } = chat;
       const path = workspace.workspaceDirectory || workspace.projectRootPath;
       const branch = currentBranch(workspace);
-      const items: MenuAction[] = [
-        { id: "copy-path", label: "Copy path", icon: "Copy", onSelect: () => run(() => copyText(path), "Path copied") },
-      ];
+      const items: MenuAction[] = [];
+      const openLaterMenu = () => setLaterMenu({ chat, point });
+      if (setAside) {
+        items.push(
+          {
+            id: "bring-back",
+            label: "Bring back now",
+            icon: "Undo2",
+            onSelect: () => run(() => actions.bringBack(serverId, workspace.id)),
+          },
+          { id: "later", label: "Change when it comes back…", icon: "AlarmClock", onSelect: openLaterMenu },
+        );
+      } else {
+        items.push({ id: "later", label: "Set aside for later…", icon: "AlarmClock", onSelect: openLaterMenu });
+      }
+      items.push({
+        id: "copy-path",
+        label: "Copy path",
+        icon: "Copy",
+        onSelect: () => run(() => copyText(path), "Path copied"),
+      });
       if (branch) {
         items.push({
           id: "copy-branch",
@@ -430,7 +570,7 @@ export function createActiveProjectsView(actions: SidebarActions) {
         </View>
         {projects.length === 0 && errors.length === 0 ? (
           <Text style={{ color: palette.foregroundExtraMuted, fontSize: 12, paddingLeft: 4, paddingBottom: 8 }}>
-            No open workspaces
+            {later.length > 0 ? "Everything is set aside for later" : "No open workspaces"}
           </Text>
         ) : null}
         {errors.map((error) => (
@@ -469,6 +609,33 @@ export function createActiveProjectsView(actions: SidebarActions) {
               </View>
             );
           })}
+          {later.length > 0 ? (
+            <View>
+              <LaterHeaderRow
+                count={later.length}
+                collapsed={laterCollapsed}
+                palette={palette}
+                holdsCurrent={laterHoldsCurrent}
+                onToggle={() => setLaterCollapsed(!laterCollapsed)}
+              />
+              {laterCollapsed
+                ? null
+                : later.map(({ chat, entry, project }) => (
+                    <WorkspaceRow
+                      key={`${chat.serverId}:${chat.workspace.id}`}
+                      chat={chat}
+                      badge={badges.get(chat.serverId)}
+                      palette={palette}
+                      now={now}
+                      selected={isActive(current, chat.serverId, chat.workspace.id)}
+                      trailing={returnsAt(entry.until, now)}
+                      detail={project}
+                      onOpen={() => navigation.openWorkspace(workspaceRef(chat.serverId, chat.workspace.id))}
+                      onContextMenu={(point) => setMenu({ chat, point })}
+                    />
+                  ))}
+            </View>
+          ) : null}
         </ScrollView>
         <ContextMenu
           position={sortMenu}
@@ -484,9 +651,15 @@ export function createActiveProjectsView(actions: SidebarActions) {
         />
         <ContextMenu
           position={menu?.point ?? null}
-          actions={menu ? menuActions(menu.chat) : []}
+          actions={menu ? menuActions(menu.chat, menu.point, laterKeys.has(laterKey(menu.chat.serverId, menu.chat.workspace.id))) : []}
           palette={palette}
           onClose={() => setMenu(null)}
+        />
+        <ContextMenu
+          position={laterMenu?.point ?? null}
+          actions={laterMenu ? laterOptions(laterMenu.chat) : []}
+          palette={palette}
+          onClose={() => setLaterMenu(null)}
         />
         {renaming ? (
           <RenameDialog
